@@ -30941,7 +30941,28 @@ else if (CONFIG.conectarAlAbrir) conectar();
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") pedirPantalla(); });
   bCon.addEventListener("click", (e) => { e.stopPropagation(); activarSonido(); pedirPantalla(); if (estado === "desconectado") conectar(); else desconectar(); });
   bMic.addEventListener("click", (e) => { e.stopPropagation(); activarSonido(); alternarMicrofono(); });
-  bCalla.addEventListener("click", (e) => { e.stopPropagation(); activarSonido(); if (conv) { try { conv.sendUserActivity(); conv.sendContextualUpdate("[SILENCIO]"); } catch (err) {} avisar("var(--ok)"); } else avisar("var(--bad)"); });
+  // Callar: corta al instante lo que Fer está diciendo (volumen a cero) y le pide silencio.
+  // Cuando Fer termina ese turno, su voz vuelve sola, para que la próxima respuesta se escuche normal.
+  let callandoDesde = 0, escuchandoDesde = 0;
+  bCalla.addEventListener("click", (e) => {
+    e.stopPropagation(); activarSonido();
+    if (!conv) { avisar("var(--bad)"); return; }
+    try { conv.setVolume({ volume: 0 }); conv.sendUserActivity(); conv.sendContextualUpdate("[SILENCIO]"); } catch (err) {}
+    callandoDesde = performance.now(); escuchandoDesde = 0;
+    avisar("var(--ok)");
+  });
+  setInterval(() => {
+    if (!callandoDesde) return;
+    const ahora = performance.now();
+    if (!conv) { callandoDesde = 0; return; }
+    if (modo === "speaking") { escuchandoDesde = 0; }
+    else if (!escuchandoDesde) { escuchandoDesde = ahora; }
+    // vuelve la voz cuando Fer lleva medio segundo sin hablar (o a los 20 s, por seguridad)
+    if ((escuchandoDesde && ahora - escuchandoDesde > 500 && ahora - callandoDesde > 600) || ahora - callandoDesde > 20000) {
+      try { conv.setVolume({ volume: volumen }); } catch (err) {}
+      callandoDesde = 0; escuchandoDesde = 0;
+    }
+  }, 100);
   function pintar() {
     bCon.textContent = estado === "desconectado" ? "Conectar" : (estado === "conectando" ? "Conectando…" : "Cortar");
     bCon.className = estado === "conectado" ? "on" : "";
@@ -30949,6 +30970,8 @@ else if (CONFIG.conectarAlAbrir) conectar();
     bMic.textContent = !conectado ? "Micrófono" : (micSilenciado ? "Mic APAGADO" : "Mic abierto");
     bMic.className = !conectado ? "" : (micSilenciado ? "off" : "on");
     bCalla.disabled = !conectado; bCalla.style.opacity = conectado ? 1 : 0.5;
+    bCalla.textContent = callandoDesde ? "Callado" : "Callar";
+    bCalla.className = callandoDesde ? "off" : "";
   }
   document.getElementById("b-clave").addEventListener("click", (e) => { e.stopPropagation(); pedirClave(); });
   setInterval(pintar, 250); pintar(); pedirPantalla();
