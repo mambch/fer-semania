@@ -46,6 +46,17 @@
   #aviso-flotante { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; padding: 0 10vw; text-align: center; color: #fff; font-size: 2.6vh; line-height: 1.4; text-shadow: 0 1px 6px rgba(0,0,0,0.55); pointer-events: none; }
   body.flotando #aviso-flotante { display: flex; }
 
+
+  #caja-clave { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(5,8,14,0.72); z-index: 40; padding: 16px; }
+  #caja-clave.visible { display: flex; }
+  #caja-clave .cc-panel { width: min(520px, 100%); background: #121826; color: #eef2f7; border-radius: 14px; padding: 18px; font: 15px/1.45 system-ui, sans-serif; }
+  #caja-clave .cc-titulo { font-weight: 700; font-size: 18px; margin-bottom: 6px; }
+  #caja-clave .cc-msg { color: #ffb84d; min-height: 1.4em; margin-bottom: 8px; }
+  #caja-clave input { width: 100%; padding: 12px; border-radius: 10px; border: 0; font-size: 16px; background: #0b0f16; color: #fff; outline: 2px solid rgba(255,255,255,0.2); }
+  #caja-clave .cc-nota { color: #9aa7b8; font-size: 13px; margin: 6px 0 12px; }
+  #caja-clave .cc-botones { display: flex; flex-wrap: wrap; gap: 8px; }
+  #caja-clave button { flex: 1 1 140px; min-height: 48px; border: 0; border-radius: 10px; font: 700 15px system-ui, sans-serif; color: #fff; background: rgba(255,255,255,0.14); }
+  #caja-clave #cc-guardar { background: #1f9d68; }
   #tactil { position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 10px; padding: 12px 12px calc(12px + env(safe-area-inset-bottom)); background: rgba(10,14,22,0.55); z-index: 20; }
   #tactil button { flex: 1; min-height: 64px; border: 0; border-radius: 14px; font: 700 18px system-ui, sans-serif; color: #fff; background: rgba(255,255,255,0.16); touch-action: manipulation; }
   #tactil button.on { background: #1f9d68; }
@@ -102,6 +113,7 @@
       <tr><td><kbd>+</kbd> <kbd>-</kbd></td><td>Volumen de Fer</td></tr>
       <tr><td><kbd>F</kbd></td><td>Pantalla completa</td></tr>
       <tr><td><kbd>T</kbd></td><td>Prueba de animación sin conexión</td></tr>
+      <tr><td><kbd>K</kbd></td><td>Clave de ElevenLabs</td></tr>
       <tr><td><kbd>H</kbd></td><td>Esconder / mostrar este panel</td></tr>
     </table>
     <div class="seccion">
@@ -30168,7 +30180,8 @@ const CONFIG = {
   marca: "VIRIA",                                   // texto de la esquina; "" para ocultarlo
   subtitulos: false,                                // se cambia con la tecla C
   reconectarAutomatico: true,
-  conectarAlAbrir: true,          // se conecta a Fer apenas se abre el archivo
+  conectarAlAbrir: true,
+  pedirClaveAlAbrir: true,       // si no hay clave guardada en este equipo, la pide al abrir          // se conecta a Fer apenas se abre el archivo
   ocultarPanelAlConectar: true,   // el panel se esconde 4 s después de conectar (H lo vuelve a mostrar)
   // Animación del pico. La sensibilidad (1 a 5) se cambia en vivo con las flechas ↓ y ↑ y queda guardada.
   rangoVozDb: 30,        // la voz cuenta como "hablando" si está a menos de 30 dB de su máximo reciente
@@ -30277,6 +30290,63 @@ function fijarLamina(n, origen) {
   enviarContexto(ultimaParte);
 }
 
+
+/* ---------- clave de ElevenLabs (para usar el agente con la autenticación activada) ---------- */
+// La clave se guarda solo en este equipo (localStorage). Nunca va en el archivo publicado.
+const CLAVE_LS = "fer.claveElevenLabs";
+function leerClave() { try { return localStorage.getItem(CLAVE_LS) || ""; } catch (e) { return ""; } }
+function guardarClave(v) { try { v ? localStorage.setItem(CLAVE_LS, v) : localStorage.removeItem(CLAVE_LS); } catch (e) {} }
+let claveMala = false;
+async function credencialSesion() {
+  const clave = leerClave();
+  if (!clave) return { agentId: CONFIG.agentId };
+  const base = "https://api.elevenlabs.io/v1/convai/conversation/";
+  const ws = CONFIG.conexion === "websocket";
+  const url = base + (ws ? "get-signed-url" : "token") + "?agent_id=" + encodeURIComponent(CONFIG.agentId);
+  let r;
+  try { r = await fetch(url, { headers: { "xi-api-key": clave } }); }
+  catch (e) { throw new Error("no se pudo pedir el permiso a ElevenLabs (¿internet?)"); }
+  if (r.status === 401 || r.status === 403) { claveMala = true; throw new Error("ElevenLabs rechazó la clave (" + r.status + ")"); }
+  if (!r.ok) throw new Error("ElevenLabs respondió " + r.status + " al pedir el permiso");
+  const d = await r.json();
+  if (ws) { if (!d.signed_url) throw new Error("ElevenLabs no entregó la URL firmada"); return { signedUrl: d.signed_url }; }
+  if (!d.token) throw new Error("ElevenLabs no entregó el permiso de conexión");
+  return { conversationToken: d.token };
+}
+function pedirClave(mensaje) {
+  let caja = document.getElementById("caja-clave");
+  if (!caja) {
+    caja = document.createElement("div");
+    caja.id = "caja-clave";
+    caja.innerHTML =
+      '<div class="cc-panel">' +
+      '<div class="cc-titulo">Clave de ElevenLabs</div>' +
+      '<div class="cc-msg" id="cc-msg"></div>' +
+      '<input id="cc-input" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Pega aquí la clave (sk_...)">' +
+      '<div class="cc-nota">Se guarda solo en este equipo. No queda en la página publicada.</div>' +
+      '<div class="cc-botones">' +
+      '<button id="cc-guardar" type="button">Guardar y conectar</button>' +
+      '<button id="cc-sin" type="button">Seguir sin clave</button>' +
+      '<button id="cc-borrar" type="button">Borrar clave</button>' +
+      '</div></div>';
+    document.body.appendChild(caja);
+    const cerrar = () => caja.classList.remove("visible");
+    caja.addEventListener("pointerdown", (e) => e.stopPropagation());
+    document.getElementById("cc-guardar").addEventListener("click", () => {
+      const v = document.getElementById("cc-input").value.trim();
+      if (!v) { document.getElementById("cc-msg").textContent = "Escribe la clave primero."; return; }
+      guardarClave(v); document.getElementById("cc-input").value = ""; cerrar();
+      activarSonido(); if (estado === "desconectado") conectar();
+    });
+    document.getElementById("cc-sin").addEventListener("click", () => { cerrar(); activarSonido(); if (estado === "desconectado") conectar(); });
+    document.getElementById("cc-borrar").addEventListener("click", () => { guardarClave(""); document.getElementById("cc-msg").textContent = "Clave borrada de este equipo."; });
+    document.getElementById("cc-input").addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") document.getElementById("cc-guardar").click(); });
+  }
+  document.getElementById("cc-msg").textContent = mensaje || (leerClave() ? "Hay una clave guardada. Puedes reemplazarla o borrarla." : "Sin clave, FER solo conecta si el agente tiene la autenticación desactivada.");
+  caja.classList.add("visible");
+  setTimeout(() => document.getElementById("cc-input").focus(), 50);
+}
+
 /* ---------- conexión con el agente ---------- */
 async function conectar() {
   if (estado !== "desconectado") return;
@@ -30291,8 +30361,9 @@ async function conectar() {
     return;
   }
   try {
+    const credencial = await credencialSesion();
     conv = await ElevenLabsClient.Conversation.startSession({
-      agentId: CONFIG.agentId,
+      ...credencial,
       connectionType: CONFIG.conexion,
       onConversationCreated: (c) => { conv = c; },
       onConnect: () => {
@@ -30318,6 +30389,12 @@ async function conectar() {
   } catch (e) {
     conv = null; estado = "desconectado"; pintarEstado();
     const motivo = (e && e.message ? e.message : e);
+    if (claveMala) {
+      claveMala = false;
+      registro("La clave de ElevenLabs no funcionó: " + motivo, true);
+      pedirClave("La clave no funcionó. Revisa que esté completa y que tenga permiso para agentes.");
+      return;
+    }
     if (!desconexionManual && intentosAlAbrir < 12) {
       intentosAlAbrir++;
       registro("No se pudo conectar (" + motivo + "). Reintentando en 5 s… Revisa internet.", true);
@@ -30796,6 +30873,7 @@ async function leerPantalla() {
 
 /* ---------- teclado ---------- */
 function manejarTeclas(e) {
+  { const cc = document.getElementById("caja-clave"); if (cc && cc.classList.contains("visible")) { if (e.key === "Escape") cc.classList.remove("visible"); return; } }
   const cajaDi = $("caja-di");
   if (cajaDi.classList.contains("visible")) {
     if (e.key === "Enter") {
@@ -30829,6 +30907,7 @@ function manejarTeclas(e) {
     case "t": modoPrueba = !modoPrueba; pruebaT0 = performance.now(); avisar("var(--ok)"); break;
     case "arrowdown": cambiarSensibilidad(-1); e.preventDefault(); break;
     case "arrowup": cambiarSensibilidad(+1); e.preventDefault(); break;
+    case "k": pedirClave(); break;
     case "h": $("hud").classList.toggle("oculto"); document.body.classList.toggle("sin-cursor", $("hud").classList.contains("oculto")); break;
   }
 }
@@ -30844,13 +30923,15 @@ window.addEventListener("beforeunload", () => { if (conv) conv.endSession(); cer
 pintarEstado();
 $("t-sens").textContent = nivelSens + "/5";
 iniciarAnimacion();
-if (CONFIG.conectarAlAbrir) conectar();
+if (!leerClave() && CONFIG.pedirClaveAlAbrir) pedirClave();
+else if (CONFIG.conectarAlAbrir) conectar();
 </script>
 
 <div id="tactil">
   <button id="b-con" type="button">Conectar</button>
   <button id="b-mic" type="button">Micrófono</button>
   <button id="b-calla" type="button">Callar</button>
+  <button id="b-clave" type="button" style="flex:0.55">Clave</button>
 </div>
 <script>
 (function () {
@@ -30869,6 +30950,7 @@ if (CONFIG.conectarAlAbrir) conectar();
     bMic.className = !conectado ? "" : (micSilenciado ? "off" : "on");
     bCalla.disabled = !conectado; bCalla.style.opacity = conectado ? 1 : 0.5;
   }
+  document.getElementById("b-clave").addEventListener("click", (e) => { e.stopPropagation(); pedirClave(); });
   setInterval(pintar, 250); pintar(); pedirPantalla();
   if (new URLSearchParams(location.search).has("tactil")) document.body.classList.add("forzar-tactil");
 })();
